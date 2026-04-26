@@ -14,7 +14,7 @@ Most data teams start with fragmented ingestion scripts and no consistent operat
 
 In plain terms: this is the kind of foundation you can show as "how I would build a real data platform", not just a notebook ETL.
 
-## Senior Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
