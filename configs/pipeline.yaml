@@ -1,0 +1,193 @@
+# ==========================================
+# Pipeline Configuration
+# Multi-Source ETL Platform
+# ==========================================
+
+pipeline:
+  name: "enterprise_daily_pipeline"
+  version: "1.0.0"
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  timezone: "America/New_York"
+
+  # ==========================================
+  # Source Systems
+  # ==========================================
+  sources:
+    erp:
+      type: "file"
+      format: "parquet"
+      path: "data/sources/erp"
+      pattern: "*.parquet"
+      batch_size: 50000
+      schema:
+        enforce: true
+        evolution: "compatible"
+
+    crm:
+      type: "api"
+      base_url: "${CRM_API_BASE_URL}"
+      endpoint: "/customers"
+      auth:
+        type: "bearer"
+        token: "${CRM_API_KEY}"
+      pagination:
+        type: "cursor"
+        page_size: 1000
+      retry:
+        max_attempts: 3
+        backoff: "exponential"
+
+    iot:
+      type: "kafka"
+      bootstrap_servers: "${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}"
+      topic: "${KAFKA_IOT_TOPIC}"
+      consumer_group: "pipeline-etl"
+      batch_size: 10000
+      window_seconds: 300
+
+  # ==========================================
+  # Transformations
+  # ==========================================
+  transformations:
+    - name: "normalize_customers"
+      type: "deduplication"
+      key_columns: ["customer_id"]
+      strategy: "merge"
+      timestamp_column: "updated_at"
+
+    - name: "enrich_geolocation"
+      type: "enrichment"
+      source: "reference"
+      lookup_table: "dim_geolocation"
+      join_keys: ["zip_code"]
+
+    - name: "calculate_metrics"
+      type: "aggregation"
+      group_by: ["region", "product_category"]
+      metrics:
+        - "sum(revenue) as total_revenue"
+        - "count(*) as transaction_count"
+        - "avg(order_value) as avg_order_value"
+
+    - name: "currency_conversion"
+      type: "custom"
+      module: "pipeline.transformers.currency"
+      function: "convert_to_usd"
+      params:
+        target_currency: "USD"
+        rate_source: "ecb"
+
+  # ==========================================
+  # Data Quality Gates
+  # ==========================================
+  quality:
+    enabled: true
+    fail_on_error: false
+    threshold: 0.95
+
+    suites:
+      - name: "erp_validations"
+        expectations:
+          - type: "expect_table_row_count_to_be_between"
+            params:
+              min_value: 1000
+              max_value: 10000000
+
+          - type: "expect_column_values_to_not_be_null"
+            params:
+              column: "transaction_id"
+
+          - type: "expect_column_values_to_be_between"
+            params:
+              column: "amount"
+              min_value: 0
+              max_value: 1000000
+
+          - type: "expect_column_values_to_match_regex"
+            params:
+              column: "email"
+              regex: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+      - name: "crm_validations"
+        expectations:
+          - type: "expect_column_values_to_be_unique"
+            params:
+              column: "customer_id"
+
+          - type: "expect_column_values_to_be_between"
+            params:
+              column: "customer_lifetime_value"
+              min_value: 0
+
+  # ==========================================
+  # Destinations
+  # ==========================================
+  destinations:
+    warehouse:
+      type: "postgres"
+      host: "${POSTGRES_HOST}"
+      port: "${POSTGRES_PORT}"
+      database: "${POSTGRES_DB}"
+      schema: "analytics"
+      username: "${POSTGRES_USER}"
+      password: "${POSTGRES_PASSWORD}"
+      write_mode: "upsert"
+      batch_size: 5000
+
+    datalake:
+      type: "s3"
+      bucket: "enterprise-datalake-prod"
+      prefix: "raw/{source}/{year}/{month}/{day}/"
+      format: "parquet"
+      compression: "snappy"
+      partition_by: ["date", "region"]
+
+  # ==========================================
+  # Lineage Tracking
+  # ==========================================
+  lineage:
+    enabled: true
+    backend: "sqlite"
+    database: "data/lineage.db"
+    capture:
+      - "source_to_transform"
+      - "transform_to_destination"
+      - "schema_changes"
+      - "quality_results"
+
+  # ==========================================
+  # Notifications
+  # ==========================================
+  notifications:
+    on_failure:
+      - type: "slack"
+        webhook: "${SLACK_WEBHOOK_URL}"
+        channel: "#data-alerts"
+      - type: "email"
+        recipients: ["data-team@company.com"]
+
+    on_success:
+      - type: "slack"
+        webhook: "${SLACK_WEBHOOK_URL}"
+        channel: "#data-ops"
+        message: "Pipeline completed successfully. Rows processed: {row_count}"
+
+  # ==========================================
+  # Monitoring
+  # ==========================================
+  monitoring:
+    metrics:
+      - "rows_processed"
+      - "bytes_processed"
+      - "processing_duration"
+      - "error_rate"
+      - "quality_score"
+
+    alerts:
+      - name: "high_error_rate"
+        condition: "error_rate > 0.05"
+        severity: "warning"
+
+      - name: "pipeline_stuck"
+        condition: "duration > 3600"
+        severity: "critical"
