@@ -10,9 +10,6 @@ Most data teams start with fragmented ingestion scripts and no consistent operat
 - Transformations and quality checks are applied consistently before loading.
 - Data is delivered to both a warehouse and a data lake pattern.
 - Operations are orchestrated and observable through Airflow, structured logs, and lineage events.
-- The full stack runs locally with Docker, which makes demos and portfolio walkthroughs reliable.
-
-In plain terms: this is the kind of foundation you can show as "how I would build a real data platform", not just a notebook ETL.
 
 ## Architecture
 
